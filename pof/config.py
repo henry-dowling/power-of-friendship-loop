@@ -28,7 +28,7 @@ DEFAULT_COMMANDS: dict[str, list[str]] = {
         "--dangerously-bypass-approvals-and-sandbox",
         "{prompt}",
     ],
-    "gemini": ["npx", "-y", "@google/gemini-cli", "-p", "{prompt}"],
+    "gemini": ["npx", "-y", "@google/gemini-cli", "--skip-trust", "-p", "{prompt}"],
 }
 
 
@@ -44,7 +44,7 @@ command = ["claude", "-p", "{prompt}", "--output-format", "text", "--dangerously
 command = ["codex", "exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "{prompt}"]
 
 [agents.gemini]
-command = ["npx", "-y", "@google/gemini-cli", "-p", "{prompt}"]
+command = ["npx", "-y", "@google/gemini-cli", "--skip-trust", "-p", "{prompt}"]
 """
 
 

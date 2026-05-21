@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import shlex
 import shutil
 import subprocess
 import sys
@@ -13,6 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import AgentConfig, LoopConfig
+
+STATUS_INTERVAL_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -103,6 +106,11 @@ class FriendshipLoop:
                 "completion_policy": "all_agents",
             }
         )
+        self._print_status(
+            f"run started; agents={', '.join(agent.name for agent in self.config.agents)}; "
+            f"transcript={self.transcript_path}"
+        )
+        self._print_status("completion requires every configured agent to agree on consecutive turns")
 
         for iteration in range(1, self.iterations + 1):
             agent = self.config.agents[(iteration - 1) % len(self.config.agents)]
@@ -211,6 +219,9 @@ class FriendshipLoop:
                 "prompt_file": str(prompt_file),
             }
         )
+        self._print_status(f"turn {iteration:03d}/{self.iterations:03d}: running {agent.name}")
+        self._print_status(f"prompt file: {prompt_file}")
+        self._print_status(f"command: {shlex.join(redact_prompt(argv, turn_prompt))}")
 
         started = time.monotonic()
         output, returncode = run_command(
@@ -218,9 +229,12 @@ class FriendshipLoop:
             cwd=self.workspace,
             timeout_seconds=self.timeout_seconds,
             stream=self.stream,
+            status_label=f"{agent.name} turn {iteration:03d}",
         )
         duration = time.monotonic() - started
         completed = self.config.completion_token in output
+        agreement = "agreed" if completed else "not complete"
+        self._print_status(f"{agent.name} finished in {duration:.1f}s with exit {returncode} ({agreement})")
         record = TurnRecord(
             iteration=iteration,
             agent=agent.name,
@@ -251,6 +265,11 @@ class FriendshipLoop:
         }
         with self.transcript_path.open("a", encoding="utf-8") as transcript:
             transcript.write(json.dumps(event_with_time, ensure_ascii=False) + "\n")
+
+    def _print_status(self, message: str) -> None:
+        if not self.stream:
+            return
+        print(f"[pof] {message}", flush=True)
 
     def _prompt_file_path(self, agent: AgentConfig, iteration: int) -> Path:
         safe_agent = "".join(char if char.isalnum() or char in ("-", "_") else "_" for char in agent.name)
@@ -386,6 +405,7 @@ def run_command(
     cwd: Path,
     timeout_seconds: float | None,
     stream: bool,
+    status_label: str | None = None,
 ) -> tuple[str, int]:
     process = subprocess.Popen(
         argv,
@@ -398,6 +418,9 @@ def run_command(
     )
     output_parts: list[str] = []
     started = time.monotonic()
+    last_status = started
+    last_activity = started
+    stream_needs_newline = False
     output_queue: queue.Queue[str | None] = queue.Queue()
 
     assert process.stdout is not None
@@ -405,8 +428,11 @@ def run_command(
 
     def read_output() -> None:
         try:
-            for line in stdout:
-                output_queue.put(line)
+            while True:
+                chunk = stdout.read(1)
+                if not chunk:
+                    break
+                output_queue.put(chunk)
         finally:
             stdout.close()
             output_queue.put(None)
@@ -424,13 +450,28 @@ def run_command(
         if line is None:
             reader_done = True
         elif line:
+            last_activity = time.monotonic()
             output_parts.append(line)
             if stream:
                 print(line, end="")
                 sys.stdout.flush()
+                stream_needs_newline = not line.endswith("\n")
 
         if reader_done and process.poll() is not None:
             break
+
+        now = time.monotonic()
+        if (
+            stream
+            and status_label
+            and now - last_activity >= STATUS_INTERVAL_SECONDS
+            and now - last_status >= STATUS_INTERVAL_SECONDS
+        ):
+            if stream_needs_newline:
+                print()
+                stream_needs_newline = False
+            print(f"[pof] {status_label} still running ({now - started:.0f}s elapsed)", flush=True)
+            last_status = now
 
         if timeout_seconds is not None and time.monotonic() - started > timeout_seconds:
             process.kill()
@@ -442,6 +483,7 @@ def run_command(
                     output_parts.append(remaining)
                     if stream:
                         print(remaining, end="")
+                        stream_needs_newline = not remaining.endswith("\n")
             output_parts.append(f"\n[pof] command timed out after {timeout_seconds:g} seconds\n")
             return "".join(output_parts), 124
 

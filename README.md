@@ -73,7 +73,7 @@ command = ["claude", "-p", "{prompt}", "--output-format", "text", "--dangerously
 command = ["codex", "exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "{prompt}"]
 
 [agents.gemini]
-command = ["npx", "-y", "@google/gemini-cli", "-p", "{prompt}"]
+command = ["npx", "-y", "@google/gemini-cli", "--skip-trust", "-p", "{prompt}"]
 ```
 
 You can override commands with environment variables:
@@ -107,4 +107,5 @@ Command templates support these placeholders:
 
 Gemini CLI headless mode uses `-p/--prompt` according to the official Gemini CLI
 documentation. The default config runs it through `npx` so a global `gemini`
-binary is not required.
+binary is not required. It also passes `--skip-trust` because pof runs Gemini
+non-interactively and cannot answer the workspace trust prompt.

@@ -29,6 +29,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("claude", result.output)
         self.assertIn("codex", result.output)
         self.assertIn("@google/gemini-cli", result.output)
+        self.assertIn("--skip-trust", result.output)
 
     def test_goal_dry_run_accepts_unquoted_objective_words(self) -> None:
         with runner.isolated_filesystem():
