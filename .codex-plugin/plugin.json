@@ -1,0 +1,30 @@
+{
+  "name": "pof",
+  "version": "0.1.0",
+  "description": "Run the Power of Friendship loop from Codex.",
+  "author": {
+    "name": "Henry Dowling"
+  },
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "goal",
+    "agents",
+    "slash-command"
+  ],
+  "interface": {
+    "displayName": "Power of Friendship Loop",
+    "shortDescription": "Rotate a goal through Claude, Codex, and Gemini.",
+    "longDescription": "Adds a /pof command that delegates goal text and options to the local Power of Friendship Loop CLI.",
+    "developerName": "Henry Dowling",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Run /pof for this task"
+    ],
+    "brandColor": "#1F6FEB"
+  }
+}

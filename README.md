@@ -4,7 +4,7 @@
 
 `pof` is a variation of /goal (provided by most modern harnesses). it cycles through codex, claude code, and gemini as it loops and only terminates when all three coding agents agree that the task is done.
 
-just run `/pof [whatever you would put into /goal normally]` and it'll work.
+From a shell, run `pof [whatever you would put into /goal normally]` and it'll work. For Codex, this repo also ships a `/pof` command definition that delegates to the same CLI once the plugin is installed.
 
 
 Each turn gets the original task, the current loop state, recent agent output,
@@ -17,7 +17,7 @@ the loop stops successfully.
 python -m pof init
 $EDITOR PROMPT.md
 python -m pof doctor
-python -m pof goal --iterations 9
+python -m pof --iterations 9
 ```
 
 The loop writes JSONL transcripts under `.pof/runs/` so later agents and humans
@@ -28,6 +28,9 @@ can inspect what happened.
 ```sh
 python -m pof init
 python -m pof doctor
+python -m pof --from PROMPT.md --iterations 9
+python -m pof "Fix the bug and add a regression test" --iterations 6
+python -m pof --dry-run --iterations 6
 python -m pof goal --from PROMPT.md --iterations 9
 python -m pof goal "Fix the bug and add a regression test" --iterations 6
 python -m pof goal --dry-run --iterations 6
@@ -37,13 +40,21 @@ Install locally if you want the `pof` command on PATH:
 
 ```sh
 python -m pip install -e .
-pof goal "Build the thing and verify it" --iterations 9
+pof "Build the thing and verify it" --iterations 9
 ```
 
-The primary command is `pof goal ...`, matching Codex goal ergonomics: the goal
-text is the main argument, and the harness keeps cycling agents until one prints
-the completion token or the turn budget runs out. If you omit the argument,
-`pof goal` reads `PROMPT.md` by default.
+The primary command is `pof ...`, with `pof goal ...` kept as an explicit alias.
+The goal text is the main argument, and the harness keeps cycling agents until
+one prints the completion token or the turn budget runs out. If you omit the
+argument, use `pof goal` or pass a goal option such as `pof --iterations 9` to
+read `PROMPT.md` by default.
+
+## Codex Slash Command
+
+The repo includes `.codex-plugin/plugin.json` and `commands/pof.md` so Codex can
+expose `/pof` when the plugin is installed. The slash command verifies
+`python -m pof` is available, installs this checkout in editable mode if needed,
+and then runs the CLI with the provided arguments.
 
 ## Configuration
 

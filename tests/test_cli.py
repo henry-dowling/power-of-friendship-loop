@@ -17,7 +17,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("goal", result.output)
         self.assertIn("doctor", result.output)
-        self.assertNotIn("run", result.output)
+        self.assertNotIn("run    ", result.output)
         self.assertNotIn("doctor-cmd", result.output)
 
     def test_goal_dry_run_accepts_objective_argument(self) -> None:
@@ -29,6 +29,31 @@ class CliTests(unittest.TestCase):
         self.assertIn("claude", result.output)
         self.assertIn("codex", result.output)
         self.assertIn("@google/gemini-cli", result.output)
+
+    def test_goal_dry_run_accepts_unquoted_objective_words(self) -> None:
+        with runner.isolated_filesystem():
+            result = runner.invoke(app, ["goal", "Smoke", "goal", "--iterations", "4", "--dry-run"])
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Planned Goal Loop", result.output)
+
+    def test_root_invocation_defaults_to_goal(self) -> None:
+        with runner.isolated_filesystem():
+            result = runner.invoke(app, ["Smoke", "goal", "--iterations", "4", "--dry-run"])
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Planned Goal Loop", result.output)
+        self.assertIn("claude", result.output)
+
+    def test_root_invocation_accepts_goal_options_without_objective(self) -> None:
+        with runner.isolated_filesystem():
+            with open("PROMPT.md", "w", encoding="utf-8") as prompt_file:
+                prompt_file.write("Smoke goal")
+
+            result = runner.invoke(app, ["--iterations", "4", "--dry-run"])
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Planned Goal Loop", result.output)
 
     def test_goal_validates_iterations(self) -> None:
         result = runner.invoke(app, ["goal", "Smoke goal", "--iterations", "0", "--dry-run"])

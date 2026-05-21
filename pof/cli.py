@@ -2,20 +2,44 @@ from __future__ import annotations
 
 import shlex
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Sequence
 
+import click
 import typer
 from rich.console import Console
 from rich.table import Table
+from typer.core import TyperGroup
 
 from .config import ConfigError, LoopConfig, load_config, write_default_files
 from .harness import AgentCommandError, FriendshipLoop, HarnessError, MissingExecutableError, doctor
 
 console = Console()
 
+
+class DefaultGoalGroup(TyperGroup):
+    def resolve_command(
+        self,
+        ctx: click.Context,
+        args: list[str],
+    ) -> tuple[str | None, click.Command | None, list[str]]:
+        if args:
+            command = self.get_command(ctx, args[0])
+            if command is not None:
+                return super().resolve_command(ctx, args)
+
+            goal_command = self.get_command(ctx, "goal")
+            if goal_command is not None:
+                return "goal", goal_command, args
+
+        return super().resolve_command(ctx, args)
+
+
 app = typer.Typer(
     name="pof",
+    cls=DefaultGoalGroup,
     help="Power-of-friendship loop — rotate a goal through Claude, Codex, and Gemini.",
+    epilog="Omit 'goal' to run a goal directly, e.g. pof 'Fix the bug' --iterations 6.",
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
     no_args_is_help=True,
 )
 
@@ -84,7 +108,7 @@ def doctor_cmd(
 @app.command()
 def goal(
     objective: Annotated[
-        str | None,
+        list[str] | None,
         typer.Argument(help="Goal objective. If omitted, pof reads --from/PROMPT.md."),
     ] = None,
     from_file: Annotated[
@@ -181,7 +205,7 @@ def run(
 
 def _run_goal(
     *,
-    objective: str | None,
+    objective: str | Sequence[str] | None,
     from_file: Path,
     iterations: int,
     workspace: Path,
@@ -286,9 +310,11 @@ def _validate_goal_options(
         raise typer.Exit(2)
 
 
-def _read_objective(objective: str | None, from_file: Path, workspace: Path) -> str:
-    if objective is not None:
+def _read_objective(objective: str | Sequence[str] | None, from_file: Path, workspace: Path) -> str:
+    if isinstance(objective, str):
         text = objective
+    elif objective is not None:
+        text = " ".join(objective)
     else:
         path = from_file if from_file.is_absolute() else workspace / from_file
         if not path.exists():
