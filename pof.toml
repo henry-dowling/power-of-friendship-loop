@@ -1,0 +1,13 @@
+[loop]
+agents = ["claude", "codex", "gemini"]
+completion_token = "<promise>COMPLETE</promise>"
+context_chars = 12000
+
+[agents.claude]
+command = ["claude", "-p", "{prompt}", "--output-format", "text", "--dangerously-skip-permissions"]
+
+[agents.codex]
+command = ["codex", "exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "{prompt}"]
+
+[agents.gemini]
+command = ["npx", "-y", "@google/gemini-cli", "-p", "{prompt}"]

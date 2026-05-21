@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "power-of-friendship-loop"
+version = "0.1.0"
+description = "A round-robin agent harness for Claude, Codex, and Gemini."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Henry Dowling" }]
+dependencies = []
+
+[project.scripts]
+pof = "pof.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["pof*"]
