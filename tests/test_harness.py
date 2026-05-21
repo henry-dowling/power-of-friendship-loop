@@ -36,7 +36,7 @@ class FriendshipLoopTests(unittest.TestCase):
             self.assertEqual(log.read_text().splitlines(), ["claude", "codex", "gemini", "claude"])
             self.assertTrue(result.transcript_path.exists())
 
-    def test_stops_on_completion_token(self) -> None:
+    def test_completion_requires_every_agent_to_agree(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             log = root / "calls.txt"
@@ -44,7 +44,31 @@ class FriendshipLoopTests(unittest.TestCase):
                 agents=[
                     fake_agent(root, "claude", log),
                     fake_agent(root, "codex", log, complete=True),
-                    fake_agent(root, "gemini", log),
+                    fake_agent(root, "gemini", log, complete=True),
+                ]
+            )
+
+            result = FriendshipLoop(
+                config=config,
+                workspace=root,
+                prompt="Do the thing.",
+                iterations=3,
+                stream=False,
+            ).run()
+
+            self.assertFalse(result.completed)
+            self.assertEqual(result.iterations_run, 3)
+            self.assertEqual([record.agent for record in result.records], ["claude", "codex", "gemini"])
+
+    def test_stops_after_all_agents_agree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            log = root / "calls.txt"
+            config = LoopConfig(
+                agents=[
+                    fake_agent(root, "claude", log, complete=True),
+                    fake_agent(root, "codex", log, complete=True),
+                    fake_agent(root, "gemini", log, complete=True),
                 ]
             )
 
@@ -57,9 +81,9 @@ class FriendshipLoopTests(unittest.TestCase):
             ).run()
 
             self.assertTrue(result.completed)
-            self.assertEqual(result.iterations_run, 2)
-            self.assertEqual([record.agent for record in result.records], ["claude", "codex"])
-            self.assertIn("<promise>COMPLETE</promise>", result.records[-1].output)
+            self.assertEqual(result.iterations_run, 3)
+            self.assertEqual([record.agent for record in result.records], ["claude", "codex", "gemini"])
+            self.assertTrue(all("<promise>COMPLETE</promise>" in record.output for record in result.records))
 
     def test_doctor_reports_absolute_fake_executable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

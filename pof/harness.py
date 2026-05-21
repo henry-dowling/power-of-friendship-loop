@@ -90,30 +90,44 @@ class FriendshipLoop:
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.run_dir.mkdir(parents=True, exist_ok=True)
         records: list[TurnRecord] = []
+        agreement_agents: list[str] = []
+        required_agents = {agent.name for agent in self.config.agents}
 
         self._write_event(
             {
                 "type": "run_start",
                 "workspace": str(self.workspace),
                 "agents": [agent.name for agent in self.config.agents],
-                "iterations": self.iterations,
+                "max_turns": self.iterations,
                 "completion_token": self.config.completion_token,
+                "completion_policy": "all_agents",
             }
         )
 
         for iteration in range(1, self.iterations + 1):
             agent = self.config.agents[(iteration - 1) % len(self.config.agents)]
-            record = self._run_turn(agent, iteration, records)
+            record = self._run_turn(agent, iteration, records, agreement_agents)
             records.append(record)
 
             if record.completed:
-                self._write_event({"type": "run_complete", "iteration": iteration, "agent": agent.name})
-                return LoopResult(
-                    completed=True,
-                    iterations_run=iteration,
-                    transcript_path=self.transcript_path,
-                    records=records,
-                )
+                agreement_agents.append(agent.name)
+                if required_agents.issubset(agreement_agents):
+                    self._write_event(
+                        {
+                            "type": "run_complete",
+                            "iteration": iteration,
+                            "agent": agent.name,
+                            "agreement_agents": agreement_agents,
+                        }
+                    )
+                    return LoopResult(
+                        completed=True,
+                        iterations_run=iteration,
+                        transcript_path=self.transcript_path,
+                        records=records,
+                    )
+            else:
+                agreement_agents = []
 
             if record.returncode != 0 and not self.continue_on_error:
                 self._write_event(
@@ -126,7 +140,7 @@ class FriendshipLoop:
                 )
                 raise AgentCommandError(record, self.transcript_path)
 
-        self._write_event({"type": "run_exhausted", "iterations": self.iterations})
+        self._write_event({"type": "run_exhausted", "max_turns": self.iterations})
         return LoopResult(
             completed=False,
             iterations_run=self.iterations,
@@ -158,6 +172,7 @@ class FriendshipLoop:
         agent: AgentConfig,
         iteration: int,
         records: list[TurnRecord],
+        agreement_agents: list[str],
     ) -> TurnRecord:
         executable = agent.command[0]
         if shutil.which(executable) is None and not Path(executable).exists():
@@ -169,6 +184,7 @@ class FriendshipLoop:
             max_iterations=self.iterations,
             agent=agent.name,
             agent_order=[configured.name for configured in self.config.agents],
+            agreement_agents=agreement_agents,
             previous_records=records,
             transcript_path=self.transcript_path,
             completion_token=self.config.completion_token,
@@ -266,6 +282,7 @@ def build_turn_prompt(
     max_iterations: int,
     agent: str,
     agent_order: list[str],
+    agreement_agents: list[str],
     previous_records: list[TurnRecord],
     transcript_path: Path,
     completion_token: str,
@@ -276,25 +293,27 @@ def build_turn_prompt(
     next_agent = agent_order[iteration % len(agent_order)]
     return f"""You are participating in the power-of-friendship loop.
 
-The loop is a round-robin coding harness. One agent runs per iteration, then the
+The loop is a round-robin coding harness. One agent runs per turn, then the
 next agent continues from the current filesystem state and transcript.
 
 Loop state:
 - Current agent: {agent}
-- Current iteration: {iteration} of {max_iterations}
+- Current turn: {iteration} of {max_iterations}
 - Agent rotation: {agent_list}
-- Next agent if this turn is not complete: {next_agent}
+- Next agent if more agreement is needed: {next_agent}
+- Current completion agreement: {format_agreement(agreement_agents, agent_order)}
 - Transcript path: {transcript_path}
 
 Instructions:
 - Treat the workspace filesystem as the source of truth.
 - Inspect the relevant files before making claims.
-- Make concrete progress toward the task during this turn.
+- Make concrete progress toward the task during this turn if work remains.
 - Preserve work from previous agents unless the task requires changing it.
+- The loop only succeeds after every configured agent agrees on consecutive turns.
 - If the whole task is complete and verified, include this exact token in your final output:
   {completion_token}
 - If the task is not complete, do not print the completion token. Summarize what changed and what
-  the next agent should do.
+  the next agent should do. This resets the current agreement window.
 
 Original task:
 {base_prompt.strip()}
@@ -302,6 +321,18 @@ Original task:
 Recent loop transcript:
 {history}
 """
+
+
+def format_agreement(agreement_agents: list[str], agent_order: list[str]) -> str:
+    if not agreement_agents:
+        return "none yet"
+    agreed_agents = set(agreement_agents)
+    missing_agents = [agent for agent in agent_order if agent not in agreed_agents]
+    agreed_text = ", ".join(agreement_agents)
+    if not missing_agents:
+        return f"{agreed_text}; all configured agents have agreed"
+    missing_text = ", ".join(missing_agents)
+    return f"{agreed_text}; still waiting for {missing_text}"
 
 
 def format_history(records: list[TurnRecord], context_chars: int) -> str:

@@ -14,6 +14,7 @@ from .config import ConfigError, LoopConfig, load_config, write_default_files
 from .harness import AgentCommandError, FriendshipLoop, HarnessError, MissingExecutableError, doctor
 
 console = Console()
+DEFAULT_MAX_TURNS = 30
 
 
 class DefaultGoalGroup(TyperGroup):
@@ -38,7 +39,7 @@ app = typer.Typer(
     name="pof",
     cls=DefaultGoalGroup,
     help="Power-of-friendship loop — rotate a goal through Claude, Codex, and Gemini.",
-    epilog="Omit 'goal' to run a goal directly, e.g. pof 'Fix the bug' --iterations 6.",
+    epilog="Omit 'goal' to run a goal directly, e.g. pof 'Fix the bug'.",
     context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
     no_args_is_help=True,
 )
@@ -115,7 +116,10 @@ def goal(
         Path,
         typer.Option("--from", "--prompt-file", help="Read the goal objective from a file."),
     ] = Path("PROMPT.md"),
-    iterations: Annotated[int, typer.Option("--iterations", "-n", help="Maximum agent turns.")] = 9,
+    max_turns: Annotated[
+        int,
+        typer.Option("--max-turns", "--iterations", "-n", help="Safety cap for agent turns."),
+    ] = DEFAULT_MAX_TURNS,
     workspace: Annotated[
         Path,
         typer.Option("--workspace", "--cd", "-C", help="Workspace to run agents in."),
@@ -142,7 +146,7 @@ def goal(
     result = _run_goal(
         objective=objective,
         from_file=from_file,
-        iterations=iterations,
+        max_turns=max_turns,
         workspace=workspace,
         config_path=config,
         transcript=transcript,
@@ -161,7 +165,10 @@ def goal(
 def run(
     prompt: Annotated[str | None, typer.Option("--prompt", help="Goal text.")] = None,
     prompt_file: Annotated[Path, typer.Option("--prompt-file", help="Goal file.")] = Path("PROMPT.md"),
-    iterations: Annotated[int, typer.Option("--iterations", "-n", help="Maximum agent turns.")] = 9,
+    max_turns: Annotated[
+        int,
+        typer.Option("--max-turns", "--iterations", "-n", help="Safety cap for agent turns."),
+    ] = DEFAULT_MAX_TURNS,
     workspace: Annotated[
         Path,
         typer.Option("--workspace", "--cd", "-C", help="Workspace to run agents in."),
@@ -188,7 +195,7 @@ def run(
     result = _run_goal(
         objective=prompt,
         from_file=prompt_file,
-        iterations=iterations,
+        max_turns=max_turns,
         workspace=workspace,
         config_path=config,
         transcript=transcript,
@@ -207,7 +214,7 @@ def _run_goal(
     *,
     objective: str | Sequence[str] | None,
     from_file: Path,
-    iterations: int,
+    max_turns: int,
     workspace: Path,
     config_path: Path,
     transcript: Path | None,
@@ -218,7 +225,7 @@ def _run_goal(
     dry_run: bool,
     agents: list[str] | None,
 ) -> int | None:
-    _validate_goal_options(iterations=iterations, context_chars=context_chars, timeout=timeout)
+    _validate_goal_options(max_turns=max_turns, context_chars=context_chars, timeout=timeout)
     loop_config = _load_or_exit(config_path, agents)
     loop_config = _override_loop_config(
         loop_config,
@@ -230,7 +237,7 @@ def _run_goal(
         config=loop_config,
         workspace=workspace,
         prompt=prompt,
-        iterations=iterations,
+        iterations=max_turns,
         transcript_path=transcript,
         continue_on_error=continue_on_error,
         timeout_seconds=timeout,
@@ -263,10 +270,10 @@ def _run_goal(
 
     console.print(f"[dim]transcript:[/dim] {result.transcript_path}")
     if result.completed:
-        console.print(f"[green]complete[/green] after {result.iterations_run} iteration(s)")
+        console.print(f"[green]complete[/green] after {result.iterations_run} turn(s)")
         return None
 
-    console.print(f"[yellow]reached max iterations[/yellow] ({result.iterations_run})")
+    console.print(f"[yellow]reached max turns[/yellow] ({result.iterations_run})")
     return 1
 
 
@@ -295,12 +302,12 @@ def _override_loop_config(
 
 def _validate_goal_options(
     *,
-    iterations: int,
+    max_turns: int,
     context_chars: int | None,
     timeout: float | None,
 ) -> None:
-    if iterations < 1:
-        console.print("[red]configuration error:[/red] --iterations must be at least 1")
+    if max_turns < 1:
+        console.print("[red]configuration error:[/red] --max-turns must be at least 1")
         raise typer.Exit(2)
     if context_chars is not None and context_chars < 1:
         console.print("[red]configuration error:[/red] --context-chars must be at least 1")

@@ -2,14 +2,14 @@
 
 # Power of Friendship Loop
 
-`pof` is a variation of /goal (provided by most modern harnesses). it cycles through codex, claude code, and gemini as it loops and only terminates when all three coding agents agree that the task is done.
+`pof` is a variation of /goal (provided by most modern harnesses). it cycles through codex, claude code, and gemini as it loops and only completes when all configured coding agents agree that the task is done.
 
 From a shell, run `pof [whatever you would put into /goal normally]` and it'll work. For Codex, this repo also ships a `/pof` command definition that delegates to the same CLI once the plugin is installed.
 
 
 Each turn gets the original task, the current loop state, recent agent output,
-and a completion contract. When an agent prints `<promise>COMPLETE</promise>`,
-the loop stops successfully.
+and a completion contract. When every configured agent prints
+`<promise>COMPLETE</promise>` on consecutive turns, the loop stops successfully.
 
 ## Quick Start
 
@@ -17,7 +17,7 @@ the loop stops successfully.
 python -m pof init
 $EDITOR PROMPT.md
 python -m pof doctor
-python -m pof --iterations 9
+python -m pof goal
 ```
 
 The loop writes JSONL transcripts under `.pof/runs/` so later agents and humans
@@ -28,26 +28,26 @@ can inspect what happened.
 ```sh
 python -m pof init
 python -m pof doctor
-python -m pof --from PROMPT.md --iterations 9
-python -m pof "Fix the bug and add a regression test" --iterations 6
-python -m pof --dry-run --iterations 6
-python -m pof goal --from PROMPT.md --iterations 9
-python -m pof goal "Fix the bug and add a regression test" --iterations 6
-python -m pof goal --dry-run --iterations 6
+python -m pof --from PROMPT.md
+python -m pof "Fix the bug and add a regression test"
+python -m pof "Fix the bug and add a regression test" --dry-run
+python -m pof goal --from PROMPT.md
+python -m pof goal "Fix the bug and add a regression test"
+python -m pof goal --dry-run
 ```
 
 Install locally if you want the `pof` command on PATH:
 
 ```sh
 python -m pip install -e .
-pof "Build the thing and verify it" --iterations 9
+pof "Build the thing and verify it"
 ```
 
 The primary command is `pof ...`, with `pof goal ...` kept as an explicit alias.
 The goal text is the main argument, and the harness keeps cycling agents until
-one prints the completion token or the turn budget runs out. If you omit the
-argument, use `pof goal` or pass a goal option such as `pof --iterations 9` to
-read `PROMPT.md` by default.
+every configured agent prints the completion token in the current agreement
+window. If you omit the argument, use `pof goal` or pass `--from PROMPT.md` to
+read `PROMPT.md`.
 
 ## Codex Slash Command
 
@@ -88,13 +88,18 @@ Command templates support these placeholders:
 - `{prompt_file}`: path to a temporary prompt file for the turn
 - `{workspace}`: absolute workspace path
 - `{transcript}`: absolute JSONL transcript path
-- `{iteration}`: current iteration number
+- `{iteration}`: current turn number
 - `{agent}`: current agent name
 
 ## Runtime Behavior
 
-- One agent runs per iteration.
-- The selected agent is `agents[(iteration - 1) % len(agents)]`.
+- One agent runs per turn.
+- The selected agent is `agents[(turn - 1) % len(agents)]`.
+- Completion requires every configured agent to print the completion token on
+  consecutive turns. If an agent does not print the token, the agreement window
+  resets.
+- `--max-turns` is a safety cap for runaway loops. The default is 30 turns.
+- `--iterations` and `-n` remain compatibility aliases for `--max-turns`.
 - Non-zero exits stop the run by default.
 - Use `--continue-on-error` to keep rotating after a failed turn.
 - Use `--agent` repeatedly to override the configured order for a goal.
