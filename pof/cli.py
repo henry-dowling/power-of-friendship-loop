@@ -15,6 +15,20 @@ from .harness import AgentCommandError, FriendshipLoop, HarnessError, MissingExe
 
 console = Console()
 DEFAULT_MAX_TURNS = 30
+COMPLETION_BANNER = r'''
+        .-""""-.           .-""""-.           .-""""-.
+       /  CLAUDE \         /  CODEX  \        / GEMINI  \
+      |    o  o   |       |   o  o   |      |   o  o   |
+       \    __   /         \   __   /        \   __   /
+        '-.____.-'          '-.__.-'          '-.__.-'
+             \                  |                  /
+              \                 |                 /
+               \                |                /
+                \               |               /
+                 \______________|______________/
+                                *
+                         POWER OF FRIENDSHIP
+'''
 
 
 class DefaultGoalGroup(TyperGroup):
@@ -270,6 +284,7 @@ def _run_goal(
 
     console.print(f"[dim]transcript:[/dim] {result.transcript_path}")
     if result.completed:
+        console.print(COMPLETION_BANNER, style="green", markup=False)
         console.print(f"[green]complete[/green] after {result.iterations_run} turn(s)")
         return None
 

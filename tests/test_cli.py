@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import stat
 import unittest
+from pathlib import Path
 
 from typer.testing import CliRunner
 
@@ -68,6 +70,31 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Planned Goal Loop", result.output)
+
+    def test_completed_run_prints_friendship_banner(self) -> None:
+        with runner.isolated_filesystem():
+            root = Path.cwd()
+            agent = root / "friend-agent"
+            agent.write_text(
+                "#!/bin/sh\nprintf 'done <promise>COMPLETE</promise>\\n'\n",
+                encoding="utf-8",
+            )
+            agent.chmod(agent.stat().st_mode | stat.S_IXUSR)
+            Path("pof.toml").write_text(
+                "[loop]\n"
+                "agents = [\"friend\"]\n"
+                "completion_token = \"<promise>COMPLETE</promise>\"\n"
+                "context_chars = 12000\n\n"
+                "[agents.friend]\n"
+                f"command = [\"{agent}\", \"{{prompt}}\"]\n",
+                encoding="utf-8",
+            )
+
+            result = runner.invoke(app, ["Smoke goal", "--config", "pof.toml", "--max-turns", "1"])
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("POWER OF FRIENDSHIP", result.output)
+        self.assertIn("complete after 1 turn(s)", result.output)
 
 
 if __name__ == "__main__":
