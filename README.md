@@ -1,11 +1,6 @@
 # Power of Friendship Loop
 
-`pof` is a real version of the Ralph loop idea: it runs a task through a
-round-robin sequence of coding agents. By default the sequence is:
-
-1. `claude`
-2. `codex`
-3. `gemini`
+`pof` is a variation of /goal (provided by most modern harnesses). it cycles through codex, claude code, and gemini as it loops and only terminates when all three coding agents agree that the task is done.
 
 Each turn gets the original task, the current loop state, recent agent output,
 and a completion contract. When an agent prints `<promise>COMPLETE</promise>`,
