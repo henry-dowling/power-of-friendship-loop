@@ -1,6 +1,6 @@
 
 
-<img width="1194" height="732" alt="CleanShot 2026-05-21 at 01 43 07@2x" src="https://github.com/user-attachments/assets/32930ce1-52bf-40de-862d-a5b591a9817e" />
+<img width="1208" height="728" alt="CleanShot 2026-05-21 at 01 43 50@2x" src="https://github.com/user-attachments/assets/223ab62f-4bbc-403d-a4e0-7aaaafdcb2da" />
 
 # Power of Friendship Loop
 
