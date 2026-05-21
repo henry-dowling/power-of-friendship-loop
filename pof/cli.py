@@ -154,6 +154,10 @@ def goal(
     ] = False,
     timeout: Annotated[float | None, typer.Option("--timeout", help="Per-agent timeout in seconds.")] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Show planned turns without running agents.")] = False,
+    headless: Annotated[
+        bool,
+        typer.Option("--headless", help="Run agents through non-interactive subprocess pipes."),
+    ] = False,
     agents: AgentOverride = None,
 ) -> None:
     """Run a Codex-style goal through the friendship loop."""
@@ -169,6 +173,7 @@ def goal(
         continue_on_error=continue_on_error,
         timeout=timeout,
         dry_run=dry_run,
+        headful=not headless,
         agents=agents,
     )
     if result is not None:
@@ -203,6 +208,10 @@ def run(
     ] = False,
     timeout: Annotated[float | None, typer.Option("--timeout", help="Per-agent timeout in seconds.")] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Show planned turns without running agents.")] = False,
+    headless: Annotated[
+        bool,
+        typer.Option("--headless", help="Run agents through non-interactive subprocess pipes."),
+    ] = False,
     agents: AgentOverride = None,
 ) -> None:
     """Compatibility alias for pof goal."""
@@ -218,6 +227,7 @@ def run(
         continue_on_error=continue_on_error,
         timeout=timeout,
         dry_run=dry_run,
+        headful=not headless,
         agents=agents,
     )
     if result is not None:
@@ -237,6 +247,7 @@ def _run_goal(
     continue_on_error: bool,
     timeout: float | None,
     dry_run: bool,
+    headful: bool,
     agents: list[str] | None,
 ) -> int | None:
     _validate_goal_options(max_turns=max_turns, context_chars=context_chars, timeout=timeout)
@@ -256,10 +267,11 @@ def _run_goal(
         continue_on_error=continue_on_error,
         timeout_seconds=timeout,
         stream=not dry_run,
+        headful=headful,
     )
 
     if dry_run:
-        table = Table(title="Planned Goal Loop")
+        table = Table(title="Planned Headful Goal Loop" if headful else "Planned Goal Loop")
         table.add_column("#", justify="right", style="dim")
         table.add_column("Agent", style="bold")
         table.add_column("Command", overflow="fold")

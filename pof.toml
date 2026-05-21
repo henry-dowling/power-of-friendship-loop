@@ -5,9 +5,12 @@ context_chars = 12000
 
 [agents.claude]
 command = ["claude", "-p", "{prompt}", "--output-format", "text", "--dangerously-skip-permissions"]
+headful_command = ["claude", "--dangerously-skip-permissions", "{prompt}"]
 
 [agents.codex]
 command = ["codex", "exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "{prompt}"]
+headful_command = ["codex", "--dangerously-bypass-approvals-and-sandbox", "{prompt}"]
 
 [agents.gemini]
 command = ["npx", "-y", "@google/gemini-cli", "--skip-trust", "-p", "{prompt}"]
+headful_command = ["npx", "-y", "@google/gemini-cli", "--skip-trust", "--prompt-interactive", "{prompt}"]

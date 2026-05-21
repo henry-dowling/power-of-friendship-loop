@@ -2,7 +2,7 @@
 
 # Power of Friendship Loop
 
-`pof` is a variation of /goal (provided by most modern harnesses). it cycles through codex, claude code, and gemini as it loops and only completes when all configured coding agents agree that the task is done.
+`pof` is a round-robin coding loop that cycles Claude, Codex, and Gemini. It only completes when all configured agents agree that the task is done.
 
 From a shell, run `pof [whatever you would put into /goal normally]` and it'll work. For Codex, this repo also ships a `/pof` command definition that delegates to the same CLI once the plugin is installed.
 
@@ -31,6 +31,7 @@ python -m pof doctor
 python -m pof --from PROMPT.md
 python -m pof "Fix the bug and add a regression test"
 python -m pof "Fix the bug and add a regression test" --dry-run
+python -m pof "Fix the bug and add a regression test" --headless
 python -m pof goal --from PROMPT.md
 python -m pof goal "Fix the bug and add a regression test"
 python -m pof goal --dry-run
@@ -68,18 +69,22 @@ context_chars = 12000
 
 [agents.claude]
 command = ["claude", "-p", "{prompt}", "--output-format", "text", "--dangerously-skip-permissions"]
+headful_command = ["claude", "--dangerously-skip-permissions", "{prompt}"]
 
 [agents.codex]
 command = ["codex", "exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "{prompt}"]
+headful_command = ["codex", "--dangerously-bypass-approvals-and-sandbox", "{prompt}"]
 
 [agents.gemini]
 command = ["npx", "-y", "@google/gemini-cli", "--skip-trust", "-p", "{prompt}"]
+headful_command = ["npx", "-y", "@google/gemini-cli", "--skip-trust", "--prompt-interactive", "{prompt}"]
 ```
 
 You can override commands with environment variables:
 
 ```sh
 POF_GEMINI_CMD='gemini -p {prompt}' python -m pof doctor
+POF_GEMINI_HEADFUL_CMD='gemini --skip-trust --prompt-interactive {prompt}' python -m pof "Fix it"
 ```
 
 Command templates support these placeholders:
@@ -105,6 +110,12 @@ Command templates support these placeholders:
 - Use `--continue-on-error` to keep rotating after a failed turn.
 - Use `--agent` repeatedly to override the configured order for a goal.
 - Use `--dry-run` to inspect the planned rotation without invoking any agents.
+- By default, each turn runs headfully in a real tmux session. pof watches the
+  pane for the turn-done marker or completion token, then captures the output
+  and rotates to the next agent. Headful mode requires `tmux` and a real
+  interactive terminal.
+- Use `--headless` to run agents through non-interactive subprocess pipes for
+  CI, scripts, or shells where tmux cannot attach.
 
 Gemini CLI headless mode uses `-p/--prompt` according to the official Gemini CLI
 documentation. The default config runs it through `npx` so a global `gemini`

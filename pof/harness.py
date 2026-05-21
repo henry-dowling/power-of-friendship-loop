@@ -16,6 +16,8 @@ from pathlib import Path
 from .config import AgentConfig, LoopConfig
 
 STATUS_INTERVAL_SECONDS = 5.0
+HEADFUL_AUTO_EXIT_IDLE_SECONDS = 1.5
+HEADFUL_AUTO_EXIT_POLL_SECONDS = 0.2
 
 
 @dataclass(frozen=True)
@@ -77,6 +79,7 @@ class FriendshipLoop:
         continue_on_error: bool = False,
         timeout_seconds: float | None = None,
         stream: bool = True,
+        headful: bool = False,
     ) -> None:
         if iterations < 1:
             raise ValueError("iterations must be at least 1")
@@ -87,6 +90,7 @@ class FriendshipLoop:
         self.continue_on_error = continue_on_error
         self.timeout_seconds = timeout_seconds
         self.stream = stream
+        self.headful = headful
         self.run_dir, self.transcript_path = _run_paths(self.workspace, transcript_path)
 
     def run(self) -> LoopResult:
@@ -163,8 +167,9 @@ class FriendshipLoop:
         for iteration in range(1, self.iterations + 1):
             agent = self.config.agents[(iteration - 1) % len(self.config.agents)]
             prompt_file = self._prompt_file_path(agent, iteration)
+            command = self._command_for_agent(agent)
             argv = render_command(
-                agent.command,
+                command,
                 prompt="<prompt>",
                 prompt_file=prompt_file,
                 workspace=self.workspace,
@@ -182,10 +187,12 @@ class FriendshipLoop:
         records: list[TurnRecord],
         agreement_agents: list[str],
     ) -> TurnRecord:
-        executable = agent.command[0]
+        command = self._command_for_agent(agent)
+        executable = command[0]
         if shutil.which(executable) is None and not Path(executable).exists():
             raise MissingExecutableError(agent.name, executable)
 
+        turn_done_token = self._turn_done_token(agent, iteration) if self.headful else None
         turn_prompt = build_turn_prompt(
             base_prompt=self.prompt,
             iteration=iteration,
@@ -196,12 +203,13 @@ class FriendshipLoop:
             previous_records=records,
             transcript_path=self.transcript_path,
             completion_token=self.config.completion_token,
+            turn_done_token=turn_done_token,
             context_chars=self.config.context_chars,
         )
         prompt_file = self._prompt_file_path(agent, iteration)
         prompt_file.write_text(turn_prompt, encoding="utf-8")
         argv = render_command(
-            agent.command,
+            command,
             prompt=turn_prompt,
             prompt_file=prompt_file,
             workspace=self.workspace,
@@ -224,13 +232,26 @@ class FriendshipLoop:
         self._print_status(f"command: {shlex.join(redact_prompt(argv, turn_prompt))}")
 
         started = time.monotonic()
-        output, returncode = run_command(
-            argv,
-            cwd=self.workspace,
-            timeout_seconds=self.timeout_seconds,
-            stream=self.stream,
-            status_label=f"{agent.name} turn {iteration:03d}",
-        )
+        if self.headful:
+            output, returncode = run_headful_command(
+                argv,
+                cwd=self.workspace,
+                timeout_seconds=self.timeout_seconds,
+                stream=self.stream,
+                run_dir=self.run_dir,
+                agent=agent.name,
+                iteration=iteration,
+                completion_token=self.config.completion_token,
+                turn_done_token=turn_done_token,
+            )
+        else:
+            output, returncode = run_command(
+                argv,
+                cwd=self.workspace,
+                timeout_seconds=self.timeout_seconds,
+                stream=self.stream,
+                status_label=f"{agent.name} turn {iteration:03d}",
+            )
         duration = time.monotonic() - started
         completed = self.config.completion_token in output
         agreement = "agreed" if completed else "not complete"
@@ -275,6 +296,15 @@ class FriendshipLoop:
         safe_agent = "".join(char if char.isalnum() or char in ("-", "_") else "_" for char in agent.name)
         return self.run_dir / f"{iteration:03d}-{safe_agent}-prompt.md"
 
+    def _turn_done_token(self, agent: AgentConfig, iteration: int) -> str:
+        safe_agent = "".join(char if char.isalnum() or char in ("-", "_") else "_" for char in agent.name)
+        return f"POF_TURN_DONE_{os.getpid()}_{iteration:03d}_{safe_agent}"
+
+    def _command_for_agent(self, agent: AgentConfig) -> list[str]:
+        if self.headful and agent.headful_command:
+            return agent.headful_command
+        return agent.command
+
 
 def doctor(config: LoopConfig) -> list[DoctorResult]:
     results: list[DoctorResult] = []
@@ -305,11 +335,17 @@ def build_turn_prompt(
     previous_records: list[TurnRecord],
     transcript_path: Path,
     completion_token: str,
+    turn_done_token: str | None,
     context_chars: int,
 ) -> str:
     history = format_history(previous_records, context_chars)
     agent_list = " -> ".join(agent_order)
     next_agent = agent_order[iteration % len(agent_order)]
+    turn_done_instruction = ""
+    if turn_done_token is not None:
+        turn_done_instruction = f"""
+- End your final output with this exact line so pof can advance to the next agent:
+  {turn_done_token}"""
     return f"""You are participating in the power-of-friendship loop.
 
 The loop is a round-robin coding harness. One agent runs per turn, then the
@@ -333,6 +369,7 @@ Instructions:
   {completion_token}
 - If the task is not complete, do not print the completion token. Summarize what changed and what
   the next agent should do. This resets the current agreement window.
+{turn_done_instruction}
 
 Original task:
 {base_prompt.strip()}
@@ -489,6 +526,219 @@ def run_command(
 
     reader.join(timeout=1)
     return "".join(output_parts), process.returncode or 0
+
+
+def run_headful_command(
+    argv: list[str],
+    *,
+    cwd: Path,
+    timeout_seconds: float | None,
+    stream: bool,
+    run_dir: Path,
+    agent: str,
+    iteration: int,
+    completion_token: str,
+    turn_done_token: str | None,
+) -> tuple[str, int]:
+    if shutil.which("tmux") is None:
+        raise HarnessError("headful mode requires tmux on PATH")
+    if stream and not sys.stdin.isatty():
+        raise HarnessError("headful mode requires a real terminal; run pof from an interactive shell")
+
+    safe_agent = "".join(char if char.isalnum() or char in ("-", "_") else "_" for char in agent)
+    session_name = f"pof-{os.getpid()}-{iteration:03d}-{safe_agent}"
+    script_path = run_dir / f"{iteration:03d}-{safe_agent}-headful.sh"
+    status_path = run_dir / f"{iteration:03d}-{safe_agent}-status.txt"
+    auto_status_path = run_dir / f"{iteration:03d}-{safe_agent}-auto-status.txt"
+    completion_seen_path = run_dir / f"{iteration:03d}-{safe_agent}-completion-seen.txt"
+    pane_log_path = run_dir / f"{iteration:03d}-{safe_agent}-pane.log"
+    command_line = shlex.join(argv)
+    script_path.write_text(
+        "#!/bin/sh\n"
+        "status=0\n"
+        f"printf '%s\\n' {shlex.quote('[pof] Headful turn started. pof will advance when the turn-done marker appears.')}\n"
+        f"{command_line}\n"
+        "status=$?\n"
+        f"printf '\\n[pof] {agent} exited with status %s; returning to pof...\\n' \"$status\"\n"
+        f"printf '%s\\n' \"$status\" > {shlex.quote(str(status_path))}\n"
+        f"tmux detach-client -s {shlex.quote(session_name)} 2>/dev/null || true\n"
+        "exit \"$status\"\n",
+        encoding="utf-8",
+    )
+    script_path.chmod(0o700)
+
+    _run_tmux(["new-session", "-d", "-s", session_name, "-c", str(cwd)])
+    try:
+        _run_tmux(["set-option", "-t", session_name, "remain-on-exit", "on"])
+        _run_tmux(["pipe-pane", "-o", "-t", session_name, f"cat > {shlex.quote(str(pane_log_path))}"])
+        _run_tmux(["send-keys", "-t", session_name, shlex.join([str(script_path)]), "C-m"])
+
+        started = time.monotonic()
+        stop_monitor = threading.Event()
+        monitor = _start_headful_auto_exit_monitor(
+            session_name=session_name,
+            pane_log_path=pane_log_path,
+            status_path=status_path,
+            auto_status_path=auto_status_path,
+            completion_seen_path=completion_seen_path,
+            completion_token=completion_token,
+            turn_done_token=turn_done_token,
+            stop=stop_monitor,
+        )
+        try:
+            while not status_path.exists() and not auto_status_path.exists():
+                if timeout_seconds is not None:
+                    remaining_timeout = timeout_seconds - (time.monotonic() - started)
+                    if remaining_timeout <= 0:
+                        _kill_tmux_session(session_name)
+                        output = _read_text_if_exists(pane_log_path)
+                        output += f"\n[pof] headful command timed out after {timeout_seconds:g} seconds\n"
+                        return output, 124
+                else:
+                    remaining_timeout = None
+
+                if not _tmux_has_session(session_name):
+                    break
+
+                if stream:
+                    attach_timeout = remaining_timeout
+                    if attach_timeout is not None:
+                        attach_timeout = max(0.1, attach_timeout)
+                    try:
+                        subprocess.run(["tmux", "attach-session", "-t", session_name], check=False, timeout=attach_timeout)
+                    except subprocess.TimeoutExpired:
+                        _kill_tmux_session(session_name)
+                        output = _read_text_if_exists(pane_log_path)
+                        output += f"\n[pof] headful command timed out after {timeout_seconds:g} seconds\n"
+                        return output, 124
+
+                    if not status_path.exists() and not auto_status_path.exists() and _tmux_has_session(session_name):
+                        print(f"[pof] {agent} turn {iteration:03d} is still active; reattaching tmux session", flush=True)
+                else:
+                    time.sleep(HEADFUL_AUTO_EXIT_POLL_SECONDS)
+        finally:
+            stop_monitor.set()
+            monitor.join(timeout=1)
+
+        if _tmux_has_session(session_name):
+            _run_tmux(["pipe-pane", "-t", session_name], check=False)
+        output = _read_text_if_exists(pane_log_path)
+        if completion_seen_path.exists() and completion_token not in output:
+            output += f"\n{completion_token}\n"
+        if auto_status_path.exists():
+            return output, 0
+        if not status_path.exists():
+            return output, 1
+        status_text = status_path.read_text(encoding="utf-8").strip()
+        try:
+            return output, int(status_text)
+        except ValueError:
+            return output, 1
+    finally:
+        if _tmux_has_session(session_name):
+            _run_tmux(["pipe-pane", "-t", session_name], check=False)
+            _kill_tmux_session(session_name)
+
+
+def _start_headful_auto_exit_monitor(
+    *,
+    session_name: str,
+    pane_log_path: Path,
+    status_path: Path,
+    auto_status_path: Path,
+    completion_seen_path: Path,
+    completion_token: str,
+    turn_done_token: str | None,
+    stop: threading.Event,
+) -> threading.Thread:
+    completion_markers = _completion_display_markers(completion_token)
+
+    def monitor() -> None:
+        last_output = ""
+        last_change = time.monotonic()
+        saw_turn_done = False
+        saw_completion = False
+
+        while not stop.is_set():
+            if status_path.exists() or auto_status_path.exists() or not _tmux_has_session(session_name):
+                return
+
+            output = _read_text_if_exists(pane_log_path)
+            now = time.monotonic()
+            if output != last_output:
+                last_output = output
+                last_change = now
+
+            if output:
+                if turn_done_token is not None and turn_done_token in output:
+                    saw_turn_done = True
+                if any(marker in output for marker in completion_markers):
+                    saw_completion = True
+
+            should_exit = saw_turn_done or saw_completion
+            if should_exit and now - last_change >= HEADFUL_AUTO_EXIT_IDLE_SECONDS:
+                if saw_completion:
+                    completion_seen_path.write_text("1\n", encoding="utf-8")
+                auto_status_path.write_text("0\n", encoding="utf-8")
+                _run_tmux(["display-message", "-t", session_name, "pof detected turn completion; cycling"], check=False)
+                _run_tmux(["detach-client", "-s", session_name], check=False)
+                _kill_tmux_session(session_name)
+                return
+
+            time.sleep(HEADFUL_AUTO_EXIT_POLL_SECONDS)
+
+    thread = threading.Thread(target=monitor, daemon=True)
+    thread.start()
+    return thread
+
+
+def _completion_display_markers(completion_token: str) -> list[str]:
+    markers = [completion_token]
+    if completion_token.startswith("<") and completion_token.endswith(">"):
+        inner_start = completion_token.find(">")
+        inner_end = completion_token.rfind("<")
+        if 0 <= inner_start < inner_end:
+            inner = completion_token[inner_start + 1 : inner_end].strip()
+            if inner:
+                markers.append(inner)
+    return markers
+
+
+def _run_tmux(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        ["tmux", *args],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if check and result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+        raise HarnessError(f"tmux {' '.join(args)} failed: {detail}")
+    return result
+
+
+def _tmux_has_session(session_name: str) -> bool:
+    result = subprocess.run(
+        ["tmux", "has-session", "-t", session_name],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.returncode == 0
+
+
+def _kill_tmux_session(session_name: str) -> None:
+    subprocess.run(
+        ["tmux", "kill-session", "-t", session_name],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _read_text_if_exists(path: Path) -> str:
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8", errors="replace")
 
 
 def _run_paths(workspace: Path, transcript_path: Path | None) -> tuple[Path, Path]:

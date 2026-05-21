@@ -32,6 +32,28 @@ DEFAULT_COMMANDS: dict[str, list[str]] = {
 }
 
 
+DEFAULT_HEADFUL_COMMANDS: dict[str, list[str]] = {
+    "claude": [
+        "claude",
+        "--dangerously-skip-permissions",
+        "{prompt}",
+    ],
+    "codex": [
+        "codex",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "{prompt}",
+    ],
+    "gemini": [
+        "npx",
+        "-y",
+        "@google/gemini-cli",
+        "--skip-trust",
+        "--prompt-interactive",
+        "{prompt}",
+    ],
+}
+
+
 DEFAULT_TOML = """[loop]
 agents = ["claude", "codex", "gemini"]
 completion_token = "<promise>COMPLETE</promise>"
@@ -39,12 +61,15 @@ context_chars = 12000
 
 [agents.claude]
 command = ["claude", "-p", "{prompt}", "--output-format", "text", "--dangerously-skip-permissions"]
+headful_command = ["claude", "--dangerously-skip-permissions", "{prompt}"]
 
 [agents.codex]
 command = ["codex", "exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "{prompt}"]
+headful_command = ["codex", "--dangerously-bypass-approvals-and-sandbox", "{prompt}"]
 
 [agents.gemini]
 command = ["npx", "-y", "@google/gemini-cli", "--skip-trust", "-p", "{prompt}"]
+headful_command = ["npx", "-y", "@google/gemini-cli", "--skip-trust", "--prompt-interactive", "{prompt}"]
 """
 
 
@@ -60,6 +85,7 @@ the current workspace, make concrete progress, and print
 class AgentConfig:
     name: str
     command: list[str]
+    headful_command: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -95,7 +121,8 @@ def load_config(path: Path | None = None, agent_order: list[str] | None = None) 
     for name in names:
         agent_raw = _mapping(agents_raw.get(name, {}), f"agents.{name}")
         command = _command_for(name, agent_raw)
-        agents.append(AgentConfig(name=name, command=command))
+        headful_command = _headful_command_for(name, agent_raw)
+        agents.append(AgentConfig(name=name, command=command, headful_command=headful_command))
 
     if not agents:
         raise ConfigError("At least one agent must be configured.")
@@ -123,21 +150,52 @@ def _command_for(name: str, agent_raw: dict[str, Any]) -> list[str]:
     if env_name in os.environ:
         return shlex.split(os.environ[env_name])
 
-    raw_command = agent_raw.get("command")
+    return _command_list(
+        raw_command=agent_raw.get("command"),
+        default_commands=DEFAULT_COMMANDS,
+        name=name,
+        field="command",
+    )
+
+
+def _headful_command_for(name: str, agent_raw: dict[str, Any]) -> list[str] | None:
+    env_name = f"POF_{name.upper().replace('-', '_')}_HEADFUL_CMD"
+    if env_name in os.environ:
+        return shlex.split(os.environ[env_name])
+
+    return _command_list(
+        raw_command=agent_raw.get("headful_command"),
+        default_commands=DEFAULT_HEADFUL_COMMANDS,
+        name=name,
+        field="headful_command",
+        required=False,
+    )
+
+
+def _command_list(
+    *,
+    raw_command: Any,
+    default_commands: dict[str, list[str]],
+    name: str,
+    field: str,
+    required: bool = True,
+) -> list[str] | None:
     if raw_command is None:
-        if name not in DEFAULT_COMMANDS:
-            raise ConfigError(f"No command configured for agent {name!r}.")
-        return list(DEFAULT_COMMANDS[name])
+        if name in default_commands:
+            return list(default_commands[name])
+        if required:
+            raise ConfigError(f"No {field} configured for agent {name!r}.")
+        return None
 
     if isinstance(raw_command, str):
         command = shlex.split(raw_command)
     elif isinstance(raw_command, list) and all(isinstance(part, str) for part in raw_command):
         command = list(raw_command)
     else:
-        raise ConfigError(f"agents.{name}.command must be a string or list of strings.")
+        raise ConfigError(f"agents.{name}.{field} must be a string or list of strings.")
 
     if not command:
-        raise ConfigError(f"agents.{name}.command cannot be empty.")
+        raise ConfigError(f"agents.{name}.{field} cannot be empty.")
     return command
 
 

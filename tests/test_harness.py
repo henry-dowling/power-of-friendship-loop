@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import stat
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -93,6 +94,49 @@ class FriendshipLoopTests(unittest.TestCase):
             self.assertEqual(len(results), 1)
             self.assertTrue(results[0].ok)
             self.assertEqual(results[0].agent, "claude")
+
+    @unittest.skipIf(shutil.which("tmux") is None, "tmux is not installed")
+    def test_headful_command_auto_exits_after_turn_done_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent_path = root / "headful-agent"
+            agent_path.write_text(
+                "#!/usr/bin/env python3\n"
+                "import re\n"
+                "import sys\n"
+                "import time\n"
+                "prompt = sys.argv[1]\n"
+                "match = re.search(r'POF_TURN_DONE_[A-Za-z0-9_]+', prompt)\n"
+                "print('done <promise>COMPLETE</promise>', flush=True)\n"
+                "print(match.group(0), flush=True)\n"
+                "while True:\n"
+                "    time.sleep(1)\n",
+                encoding="utf-8",
+            )
+            agent_path.chmod(agent_path.stat().st_mode | stat.S_IXUSR)
+            config = LoopConfig(
+                agents=[
+                    AgentConfig(
+                        name="friend",
+                        command=[str(agent_path), "{prompt}"],
+                        headful_command=[str(agent_path), "{prompt}"],
+                    )
+                ]
+            )
+
+            result = FriendshipLoop(
+                config=config,
+                workspace=root,
+                prompt="Do the thing.",
+                iterations=1,
+                timeout_seconds=8,
+                stream=False,
+                headful=True,
+            ).run()
+
+            self.assertTrue(result.completed)
+            self.assertEqual(result.records[0].returncode, 0)
+            self.assertIn("POF_TURN_DONE", result.records[0].output)
 
 
 def fake_agent(root: Path, name: str, log: Path, complete: bool = False) -> AgentConfig:

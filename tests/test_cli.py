@@ -27,25 +27,39 @@ class CliTests(unittest.TestCase):
             result = runner.invoke(app, ["goal", "Smoke goal", "--max-turns", "4", "--dry-run"])
 
         self.assertEqual(result.exit_code, 0)
-        self.assertIn("Planned Goal Loop", result.output)
+        self.assertIn("Planned Headful Goal Loop", result.output)
+        self.assertIn("claude --dangerously-skip-permissions", result.output)
+        self.assertIn("codex --dangerously-bypass-approvals-and-sandbox", result.output)
         self.assertIn("claude", result.output)
         self.assertIn("codex", result.output)
         self.assertIn("@google/gemini-cli", result.output)
+        self.assertIn("--prompt-interactive", result.output)
+
+    def test_headless_dry_run_uses_pipe_commands(self) -> None:
+        with runner.isolated_filesystem():
+            result = runner.invoke(app, ["goal", "Smoke goal", "--headless", "--max-turns", "4", "--dry-run"])
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Planned Goal Loop", result.output)
+        self.assertNotIn("Planned Headful Goal Loop", result.output)
+        self.assertIn("codex exec", result.output)
+        self.assertIn("@google/gemini-cli", result.output)
         self.assertIn("--skip-trust", result.output)
+        self.assertNotIn("--prompt-interactive", result.output)
 
     def test_goal_dry_run_accepts_unquoted_objective_words(self) -> None:
         with runner.isolated_filesystem():
             result = runner.invoke(app, ["goal", "Smoke", "goal", "--max-turns", "4", "--dry-run"])
 
         self.assertEqual(result.exit_code, 0)
-        self.assertIn("Planned Goal Loop", result.output)
+        self.assertIn("Planned Headful Goal Loop", result.output)
 
     def test_root_invocation_defaults_to_goal(self) -> None:
         with runner.isolated_filesystem():
             result = runner.invoke(app, ["Smoke", "goal", "--max-turns", "4", "--dry-run"])
 
         self.assertEqual(result.exit_code, 0)
-        self.assertIn("Planned Goal Loop", result.output)
+        self.assertIn("Planned Headful Goal Loop", result.output)
         self.assertIn("claude", result.output)
 
     def test_root_invocation_accepts_goal_options_without_objective(self) -> None:
@@ -56,7 +70,7 @@ class CliTests(unittest.TestCase):
             result = runner.invoke(app, ["--max-turns", "4", "--dry-run"])
 
         self.assertEqual(result.exit_code, 0)
-        self.assertIn("Planned Goal Loop", result.output)
+        self.assertIn("Planned Headful Goal Loop", result.output)
 
     def test_goal_validates_max_turns(self) -> None:
         result = runner.invoke(app, ["goal", "Smoke goal", "--max-turns", "0", "--dry-run"])
@@ -69,7 +83,17 @@ class CliTests(unittest.TestCase):
             result = runner.invoke(app, ["goal", "Smoke goal", "--iterations", "4", "--dry-run"])
 
         self.assertEqual(result.exit_code, 0)
-        self.assertIn("Planned Goal Loop", result.output)
+        self.assertIn("Planned Headful Goal Loop", result.output)
+
+    def test_headful_dry_run_uses_interactive_commands(self) -> None:
+        with runner.isolated_filesystem():
+            result = runner.invoke(app, ["goal", "Smoke goal", "--max-turns", "3", "--dry-run"])
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Planned Headful Goal Loop", result.output)
+        self.assertIn("claude --dangerously-skip-permissions", result.output)
+        self.assertIn("codex --dangerously-bypass-approvals-and-sandbox", result.output)
+        self.assertIn("--prompt-interactive", result.output)
 
     def test_completed_run_prints_friendship_banner(self) -> None:
         with runner.isolated_filesystem():
@@ -90,7 +114,7 @@ class CliTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            result = runner.invoke(app, ["Smoke goal", "--config", "pof.toml", "--max-turns", "1"])
+            result = runner.invoke(app, ["Smoke goal", "--config", "pof.toml", "--max-turns", "1", "--headless"])
 
         self.assertEqual(result.exit_code, 0)
         self.assertIn("POWER OF FRIENDSHIP", result.output)
