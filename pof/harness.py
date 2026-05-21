@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import queue
@@ -18,6 +19,31 @@ from .config import AgentConfig, LoopConfig
 STATUS_INTERVAL_SECONDS = 5.0
 HEADFUL_AUTO_EXIT_IDLE_SECONDS = 1.5
 HEADFUL_AUTO_EXIT_POLL_SECONDS = 0.2
+GIT_COMMAND_TIMEOUT_SECONDS = 5.0
+
+
+@dataclass(frozen=True)
+class WorkspaceSnapshot:
+    head: str | None
+    status_lines: tuple[str, ...]
+    dirty_digest: str
+
+
+@dataclass(frozen=True)
+class WorkspaceChanges:
+    commits: tuple[str, ...]
+    status_lines: tuple[str, ...]
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.commits or self.status_lines)
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "changed": self.changed,
+            "commits": list(self.commits),
+            "status": list(self.status_lines),
+        }
 
 
 @dataclass(frozen=True)
@@ -30,6 +56,7 @@ class TurnRecord:
     duration_seconds: float
     completed: bool
     prompt_file: Path
+    workspace_changes: WorkspaceChanges | None
 
 
 @dataclass(frozen=True)
@@ -38,6 +65,7 @@ class LoopResult:
     iterations_run: int
     transcript_path: Path
     records: list[TurnRecord]
+    workspace_changes: WorkspaceChanges | None
 
 
 @dataclass(frozen=True)
@@ -99,6 +127,7 @@ class FriendshipLoop:
         records: list[TurnRecord] = []
         agreement_agents: list[str] = []
         required_agents = {agent.name for agent in self.config.agents}
+        initial_workspace = capture_workspace_snapshot(self.workspace)
 
         self._write_event(
             {
@@ -132,11 +161,17 @@ class FriendshipLoop:
                             "agreement_agents": agreement_agents,
                         }
                     )
+                    workspace_changes = compare_workspace_snapshots(
+                        self.workspace,
+                        initial_workspace,
+                        capture_workspace_snapshot(self.workspace),
+                    )
                     return LoopResult(
                         completed=True,
                         iterations_run=iteration,
                         transcript_path=self.transcript_path,
                         records=records,
+                        workspace_changes=workspace_changes,
                     )
             else:
                 agreement_agents = []
@@ -153,11 +188,17 @@ class FriendshipLoop:
                 raise AgentCommandError(record, self.transcript_path)
 
         self._write_event({"type": "run_exhausted", "max_turns": self.iterations})
+        workspace_changes = compare_workspace_snapshots(
+            self.workspace,
+            initial_workspace,
+            capture_workspace_snapshot(self.workspace),
+        )
         return LoopResult(
             completed=False,
             iterations_run=self.iterations,
             transcript_path=self.transcript_path,
             records=records,
+            workspace_changes=workspace_changes,
         )
 
     def dry_run(self) -> list[tuple[int, AgentConfig, list[str]]]:
@@ -231,6 +272,7 @@ class FriendshipLoop:
         self._print_status(f"prompt file: {prompt_file}")
         self._print_status(f"command: {shlex.join(redact_prompt(argv, turn_prompt))}")
 
+        workspace_before = capture_workspace_snapshot(self.workspace)
         started = time.monotonic()
         if self.headful:
             output, returncode = run_headful_command(
@@ -253,9 +295,15 @@ class FriendshipLoop:
                 status_label=f"{agent.name} turn {iteration:03d}",
             )
         duration = time.monotonic() - started
+        workspace_changes = compare_workspace_snapshots(
+            self.workspace,
+            workspace_before,
+            capture_workspace_snapshot(self.workspace),
+        )
         completed = self.config.completion_token in output
         agreement = "agreed" if completed else "not complete"
         self._print_status(f"{agent.name} finished in {duration:.1f}s with exit {returncode} ({agreement})")
+        self._print_workspace_changes(workspace_changes)
         record = TurnRecord(
             iteration=iteration,
             agent=agent.name,
@@ -265,18 +313,20 @@ class FriendshipLoop:
             duration_seconds=duration,
             completed=completed,
             prompt_file=prompt_file,
+            workspace_changes=workspace_changes,
         )
-        self._write_event(
-            {
-                "type": "turn_result",
-                "iteration": iteration,
-                "agent": agent.name,
-                "returncode": returncode,
-                "duration_seconds": round(duration, 3),
-                "completed": completed,
-                "output": output,
-            }
-        )
+        event: dict[str, object] = {
+            "type": "turn_result",
+            "iteration": iteration,
+            "agent": agent.name,
+            "returncode": returncode,
+            "duration_seconds": round(duration, 3),
+            "completed": completed,
+            "output": output,
+        }
+        if workspace_changes is not None:
+            event["workspace_changes"] = workspace_changes.to_json()
+        self._write_event(event)
         return record
 
     def _write_event(self, event: dict[str, object]) -> None:
@@ -292,6 +342,13 @@ class FriendshipLoop:
             return
         print(f"[pof] {message}", flush=True)
 
+    def _print_workspace_changes(self, changes: WorkspaceChanges | None) -> None:
+        if changes is None or not changes.changed:
+            return
+
+        for message in format_workspace_changes(changes):
+            self._print_status(message)
+
     def _prompt_file_path(self, agent: AgentConfig, iteration: int) -> Path:
         safe_agent = "".join(char if char.isalnum() or char in ("-", "_") else "_" for char in agent.name)
         return self.run_dir / f"{iteration:03d}-{safe_agent}-prompt.md"
@@ -304,6 +361,154 @@ class FriendshipLoop:
         if self.headful and agent.headful_command:
             return agent.headful_command
         return agent.command
+
+
+def capture_workspace_snapshot(workspace: Path) -> WorkspaceSnapshot | None:
+    if shutil.which("git") is None:
+        return None
+
+    inside_work_tree = _run_git(workspace, ["rev-parse", "--is-inside-work-tree"])
+    if inside_work_tree is None or inside_work_tree.returncode != 0:
+        return None
+    if inside_work_tree.stdout.strip() != "true":
+        return None
+
+    head = _read_git_head(workspace)
+    status_lines = _read_git_status_lines(workspace)
+    return WorkspaceSnapshot(
+        head=head,
+        status_lines=status_lines,
+        dirty_digest=_read_git_dirty_digest(workspace, status_lines),
+    )
+
+
+def compare_workspace_snapshots(
+    workspace: Path,
+    before: WorkspaceSnapshot | None,
+    after: WorkspaceSnapshot | None,
+) -> WorkspaceChanges | None:
+    if before is None or after is None:
+        return None
+
+    commits = _read_git_commit_lines(workspace, before.head, after.head)
+    status_lines: tuple[str, ...] = ()
+    if before.dirty_digest != after.dirty_digest:
+        status_lines = after.status_lines
+
+    return WorkspaceChanges(commits=commits, status_lines=status_lines)
+
+
+def format_workspace_changes(changes: WorkspaceChanges) -> list[str]:
+    messages: list[str] = []
+    if changes.commits:
+        messages.append(f"workspace commits: {_format_summary_items(changes.commits)}")
+    if changes.status_lines:
+        messages.append(f"workspace files: {_format_summary_items(changes.status_lines)}")
+    return messages
+
+
+def _read_git_head(workspace: Path) -> str | None:
+    result = _run_git(workspace, ["rev-parse", "--verify", "HEAD"])
+    if result is None or result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def _read_git_status_lines(workspace: Path) -> tuple[str, ...]:
+    result = _run_git(workspace, ["status", "--porcelain=v1", "--untracked-files=all"])
+    if result is None or result.returncode != 0:
+        return ()
+
+    return tuple(
+        line
+        for line in result.stdout.splitlines()
+        if line and not _is_pof_status_line(line)
+    )
+
+
+def _read_git_dirty_digest(workspace: Path, status_lines: tuple[str, ...]) -> str:
+    digest = hashlib.sha256()
+    digest.update("\0".join(status_lines).encode("utf-8", errors="replace"))
+
+    for args in (
+        ["diff", "--binary", "--no-ext-diff"],
+        ["diff", "--cached", "--binary", "--no-ext-diff"],
+    ):
+        result = _run_git(workspace, args)
+        if result is not None and result.returncode == 0:
+            digest.update(result.stdout.encode("utf-8", errors="replace"))
+
+    return digest.hexdigest()
+
+
+def _read_git_commit_lines(
+    workspace: Path,
+    before_head: str | None,
+    after_head: str | None,
+) -> tuple[str, ...]:
+    if before_head == after_head:
+        return ()
+    if after_head is None:
+        before = _short_commit(before_head)
+        return (f"HEAD changed from {before} to no commit",)
+
+    if before_head is None:
+        result = _run_git(
+            workspace,
+            ["log", "--oneline", "--decorate=short", "--no-color", "--max-count=5", after_head],
+        )
+    else:
+        result = _run_git(
+            workspace,
+            ["log", "--oneline", "--decorate=short", "--no-color", f"{before_head}..{after_head}"],
+        )
+
+    if result is not None and result.returncode == 0:
+        lines = tuple(line for line in result.stdout.splitlines() if line)
+        if lines:
+            return lines
+
+    before = _short_commit(before_head)
+    after = _short_commit(after_head)
+    return (f"HEAD changed from {before} to {after}",)
+
+
+def _run_git(workspace: Path, args: list[str]) -> subprocess.CompletedProcess[str] | None:
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=GIT_COMMAND_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _is_pof_status_line(line: str) -> bool:
+    paths = line[3:] if len(line) > 3 else line
+    return any(_is_pof_path(path.strip()) for path in paths.split(" -> "))
+
+
+def _is_pof_path(path: str) -> bool:
+    return path == ".pof" or path.startswith(".pof/")
+
+
+def _short_commit(commit: str | None) -> str:
+    if commit is None:
+        return "none"
+    return commit[:7]
+
+
+def _format_summary_items(items: tuple[str, ...], limit: int = 6) -> str:
+    visible = list(items[:limit])
+    summary = ", ".join(visible)
+    hidden_count = len(items) - len(visible)
+    if hidden_count > 0:
+        summary += f", and {hidden_count} more"
+    return summary
 
 
 def doctor(config: LoopConfig) -> list[DoctorResult]:

@@ -11,7 +11,15 @@ from rich.table import Table
 from typer.core import TyperGroup
 
 from .config import ConfigError, LoopConfig, load_config, write_default_files
-from .harness import AgentCommandError, FriendshipLoop, HarnessError, MissingExecutableError, doctor
+from .harness import (
+    AgentCommandError,
+    FriendshipLoop,
+    HarnessError,
+    MissingExecutableError,
+    WorkspaceChanges,
+    doctor,
+    format_workspace_changes,
+)
 
 console = Console()
 DEFAULT_MAX_TURNS = 30
@@ -295,6 +303,7 @@ def _run_goal(
         return 1
 
     console.print(f"[dim]transcript:[/dim] {result.transcript_path}")
+    _print_workspace_effects(result.workspace_changes)
     if result.completed:
         console.print(COMPLETION_BANNER, style="green", markup=False)
         console.print(f"[green]complete[/green] after {result.iterations_run} turn(s)")
@@ -302,6 +311,19 @@ def _run_goal(
 
     console.print(f"[yellow]reached max turns[/yellow] ({result.iterations_run})")
     return 1
+
+
+def _print_workspace_effects(changes: WorkspaceChanges | None) -> None:
+    console.print("[bold]workspace effects[/bold]")
+    if changes is None:
+        console.print("[dim]not available; workspace is not a git worktree[/dim]")
+        return
+    if not changes.changed:
+        console.print("[yellow]no git changes detected; completion was agreement-only[/yellow]")
+        return
+
+    for message in format_workspace_changes(changes):
+        console.print(message)
 
 
 def _load_or_exit(config: Path, agents: list[str] | None) -> LoopConfig:
