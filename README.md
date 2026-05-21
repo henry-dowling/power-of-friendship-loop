@@ -103,6 +103,9 @@ Command templates support these placeholders:
 - Completion requires every configured agent to print the completion token on
   consecutive turns. If an agent does not print the token, the agreement window
   resets.
+- In git workspaces, pof reports commits and uncommitted file changes detected
+  during the run. If the agents agree without changing git-visible state, the
+  final output says completion was agreement-only.
 - Successful completion prints a small ASCII power-of-friendship banner.
 - `--max-turns` is a safety cap for runaway loops. The default is 30 turns.
 - `--iterations` and `-n` remain compatibility aliases for `--max-turns`.
