@@ -17,7 +17,7 @@ the loop stops successfully.
 python -m pof init
 $EDITOR PROMPT.md
 python -m pof doctor
-python -m pof run --iterations 9
+python -m pof goal --iterations 9
 ```
 
 The loop writes JSONL transcripts under `.pof/runs/` so later agents and humans
@@ -28,17 +28,22 @@ can inspect what happened.
 ```sh
 python -m pof init
 python -m pof doctor
-python -m pof run --prompt-file PROMPT.md --iterations 9
-python -m pof run --prompt "Fix the bug and add a regression test" --iterations 6
-python -m pof run --dry-run --iterations 6
+python -m pof goal --from PROMPT.md --iterations 9
+python -m pof goal "Fix the bug and add a regression test" --iterations 6
+python -m pof goal --dry-run --iterations 6
 ```
 
 Install locally if you want the `pof` command on PATH:
 
 ```sh
 python -m pip install -e .
-pof run --iterations 9
+pof goal "Build the thing and verify it" --iterations 9
 ```
+
+The primary command is `pof goal ...`, matching Codex goal ergonomics: the goal
+text is the main argument, and the harness keeps cycling agents until one prints
+the completion token or the turn budget runs out. If you omit the argument,
+`pof goal` reads `PROMPT.md` by default.
 
 ## Configuration
 
@@ -81,7 +86,7 @@ Command templates support these placeholders:
 - The selected agent is `agents[(iteration - 1) % len(agents)]`.
 - Non-zero exits stop the run by default.
 - Use `--continue-on-error` to keep rotating after a failed turn.
-- Use `--agent` repeatedly to override the configured order for a run.
+- Use `--agent` repeatedly to override the configured order for a goal.
 - Use `--dry-run` to inspect the planned rotation without invoking any agents.
 
 Gemini CLI headless mode uses `-p/--prompt` according to the official Gemini CLI

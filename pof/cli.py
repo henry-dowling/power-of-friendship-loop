@@ -1,164 +1,310 @@
 from __future__ import annotations
 
-import argparse
 import shlex
-import sys
 from pathlib import Path
+from typing import Annotated
 
-from .config import ConfigError, load_config, write_default_files
+import typer
+from rich.console import Console
+from rich.table import Table
+
+from .config import ConfigError, LoopConfig, load_config, write_default_files
 from .harness import AgentCommandError, FriendshipLoop, HarnessError, MissingExecutableError, doctor
 
+console = Console()
 
-def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-
-    try:
-        if args.command == "init":
-            return cmd_init(args)
-        if args.command == "doctor":
-            return cmd_doctor(args)
-        if args.command == "run":
-            return cmd_run(args)
-    except ConfigError as exc:
-        print(f"pof: configuration error: {exc}", file=sys.stderr)
-        return 2
-    except MissingExecutableError as exc:
-        print(f"pof: {exc}", file=sys.stderr)
-        return 127
-    except AgentCommandError as exc:
-        print(f"pof: {exc}", file=sys.stderr)
-        print(f"pof: transcript: {exc.transcript_path}", file=sys.stderr)
-        return exc.record.returncode or 1
-    except HarnessError as exc:
-        print(f"pof: {exc}", file=sys.stderr)
-        return 1
-
-    parser.print_help()
-    return 2
+app = typer.Typer(
+    name="pof",
+    help="Power-of-friendship loop — rotate a goal through Claude, Codex, and Gemini.",
+    no_args_is_help=True,
+)
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="pof",
-        description="Run a power-of-friendship loop across Claude, Codex, and Gemini.",
-    )
-    subparsers = parser.add_subparsers(dest="command")
-
-    init_parser = subparsers.add_parser("init", help="write starter pof.toml and PROMPT.md")
-    init_parser.add_argument("--force", action="store_true", help="overwrite existing files")
-    init_parser.add_argument("--directory", type=Path, default=Path.cwd(), help="directory to initialize")
-
-    doctor_parser = subparsers.add_parser("doctor", help="check configured agent executables")
-    add_config_args(doctor_parser)
-    doctor_parser.add_argument(
-        "--agent",
-        action="append",
-        dest="agents",
-        help="override the configured rotation; repeat for multiple agents",
-    )
-
-    run_parser = subparsers.add_parser("run", help="run the round-robin harness")
-    add_config_args(run_parser)
-    run_parser.add_argument("-n", "--iterations", type=int, default=9, help="maximum turns to run")
-    run_parser.add_argument("--workspace", type=Path, default=Path.cwd(), help="workspace to run agents in")
-    run_parser.add_argument("--prompt-file", type=Path, default=Path("PROMPT.md"), help="task prompt file")
-    run_parser.add_argument("--prompt", help="task prompt text; overrides --prompt-file")
-    run_parser.add_argument("--transcript", type=Path, help="explicit transcript JSONL path")
-    run_parser.add_argument("--context-chars", type=int, help="recent transcript characters passed to agents")
-    run_parser.add_argument("--completion-token", help="token that marks successful completion")
-    run_parser.add_argument("--continue-on-error", action="store_true", help="continue after non-zero agent exits")
-    run_parser.add_argument("--timeout", type=float, help="per-agent timeout in seconds")
-    run_parser.add_argument("--dry-run", action="store_true", help="show planned turns without running agents")
-    run_parser.add_argument(
-        "--agent",
-        action="append",
-        dest="agents",
-        help="override the configured rotation; repeat for multiple agents",
-    )
-
-    return parser
+ConfigPath = Annotated[Path, typer.Option("--config", help="Configuration file.")]
+AgentOverride = Annotated[
+    list[str] | None,
+    typer.Option("--agent", help="Override the configured rotation; repeat for multiple agents."),
+]
 
 
-def add_config_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--config", type=Path, default=Path("pof.toml"), help="configuration file")
-
-
-def cmd_init(args: argparse.Namespace) -> int:
-    written = write_default_files(args.directory, force=args.force)
+@app.command()
+def init(
+    force: Annotated[bool, typer.Option("--force", help="Overwrite existing files.")] = False,
+    directory: Annotated[Path, typer.Option("--directory", "-C", help="Directory to initialize.")] = Path.cwd(),
+) -> None:
+    """Write starter pof.toml and PROMPT.md."""
+    written = write_default_files(directory, force=force)
     if written:
         for path in written:
-            print(f"wrote {path}")
-    else:
-        print("pof.toml and PROMPT.md already exist; use --force to overwrite")
-    return 0
+            console.print(f"[green]wrote[/green] {path}")
+        return
+    console.print("[dim]pof.toml and PROMPT.md already exist; use --force to overwrite.[/dim]")
 
 
-def cmd_doctor(args: argparse.Namespace) -> int:
-    config = load_config(args.config, agent_order=args.agents)
-    results = doctor(config)
-    width = max(len(result.agent) for result in results)
-    ok = True
-    for result in results:
-        status = "ok" if result.ok else "missing"
-        resolved = result.resolved or result.executable
-        print(f"{result.agent:<{width}}  {status:<7}  {resolved}")
-        ok = ok and result.ok
-    return 0 if ok else 1
+@app.command("doctor")
+def doctor_cmd(
+    config: ConfigPath = Path("pof.toml"),
+    agents: AgentOverride = None,
+    as_json: Annotated[bool, typer.Option("--json", help="Print machine-readable JSON.")] = False,
+) -> None:
+    """Check configured agent executables."""
+    import json
 
+    loop_config = _load_or_exit(config, agents)
+    results = doctor(loop_config)
 
-def cmd_run(args: argparse.Namespace) -> int:
-    if args.iterations < 1:
-        raise ConfigError("--iterations must be at least 1")
-    if args.context_chars is not None and args.context_chars < 1:
-        raise ConfigError("--context-chars must be at least 1")
-    if args.timeout is not None and args.timeout <= 0:
-        raise ConfigError("--timeout must be greater than 0")
-
-    config = load_config(args.config, agent_order=args.agents)
-    if args.context_chars is not None or args.completion_token is not None:
-        config = type(config)(
-            agents=config.agents,
-            completion_token=args.completion_token or config.completion_token,
-            context_chars=args.context_chars if args.context_chars is not None else config.context_chars,
+    if as_json:
+        print(
+            json.dumps(
+                [
+                    {
+                        "agent": result.agent,
+                        "executable": result.executable,
+                        "resolved": result.resolved,
+                        "ok": result.ok,
+                    }
+                    for result in results
+                ]
+            )
         )
+    else:
+        table = Table(title="Agent Commands")
+        table.add_column("Agent", style="bold")
+        table.add_column("Status")
+        table.add_column("Executable", overflow="fold")
+        for result in results:
+            status = "[green]ok[/green]" if result.ok else "[red]missing[/red]"
+            table.add_row(result.agent, status, result.resolved or result.executable)
+        console.print(table)
 
-    prompt = read_prompt(args.prompt, args.prompt_file, args.workspace)
+    if not all(result.ok for result in results):
+        raise typer.Exit(1)
+
+
+@app.command()
+def goal(
+    objective: Annotated[
+        str | None,
+        typer.Argument(help="Goal objective. If omitted, pof reads --from/PROMPT.md."),
+    ] = None,
+    from_file: Annotated[
+        Path,
+        typer.Option("--from", "--prompt-file", help="Read the goal objective from a file."),
+    ] = Path("PROMPT.md"),
+    iterations: Annotated[int, typer.Option("--iterations", "-n", help="Maximum agent turns.")] = 9,
+    workspace: Annotated[
+        Path,
+        typer.Option("--workspace", "--cd", "-C", help="Workspace to run agents in."),
+    ] = Path.cwd(),
+    config: ConfigPath = Path("pof.toml"),
+    transcript: Annotated[Path | None, typer.Option("--transcript", help="Explicit transcript JSONL path.")] = None,
+    context_chars: Annotated[
+        int | None,
+        typer.Option("--context-chars", help="Recent transcript characters passed to agents."),
+    ] = None,
+    completion_token: Annotated[
+        str | None,
+        typer.Option("--completion-token", help="Token that marks successful completion."),
+    ] = None,
+    continue_on_error: Annotated[
+        bool,
+        typer.Option("--continue-on-error", help="Continue after non-zero agent exits."),
+    ] = False,
+    timeout: Annotated[float | None, typer.Option("--timeout", help="Per-agent timeout in seconds.")] = None,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Show planned turns without running agents.")] = False,
+    agents: AgentOverride = None,
+) -> None:
+    """Run a Codex-style goal through the friendship loop."""
+    result = _run_goal(
+        objective=objective,
+        from_file=from_file,
+        iterations=iterations,
+        workspace=workspace,
+        config_path=config,
+        transcript=transcript,
+        context_chars=context_chars,
+        completion_token=completion_token,
+        continue_on_error=continue_on_error,
+        timeout=timeout,
+        dry_run=dry_run,
+        agents=agents,
+    )
+    if result is not None:
+        raise typer.Exit(result)
+
+
+@app.command(hidden=True)
+def run(
+    prompt: Annotated[str | None, typer.Option("--prompt", help="Goal text.")] = None,
+    prompt_file: Annotated[Path, typer.Option("--prompt-file", help="Goal file.")] = Path("PROMPT.md"),
+    iterations: Annotated[int, typer.Option("--iterations", "-n", help="Maximum agent turns.")] = 9,
+    workspace: Annotated[
+        Path,
+        typer.Option("--workspace", "--cd", "-C", help="Workspace to run agents in."),
+    ] = Path.cwd(),
+    config: ConfigPath = Path("pof.toml"),
+    transcript: Annotated[Path | None, typer.Option("--transcript", help="Explicit transcript JSONL path.")] = None,
+    context_chars: Annotated[
+        int | None,
+        typer.Option("--context-chars", help="Recent transcript characters passed to agents."),
+    ] = None,
+    completion_token: Annotated[
+        str | None,
+        typer.Option("--completion-token", help="Token that marks successful completion."),
+    ] = None,
+    continue_on_error: Annotated[
+        bool,
+        typer.Option("--continue-on-error", help="Continue after non-zero agent exits."),
+    ] = False,
+    timeout: Annotated[float | None, typer.Option("--timeout", help="Per-agent timeout in seconds.")] = None,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Show planned turns without running agents.")] = False,
+    agents: AgentOverride = None,
+) -> None:
+    """Compatibility alias for pof goal."""
+    result = _run_goal(
+        objective=prompt,
+        from_file=prompt_file,
+        iterations=iterations,
+        workspace=workspace,
+        config_path=config,
+        transcript=transcript,
+        context_chars=context_chars,
+        completion_token=completion_token,
+        continue_on_error=continue_on_error,
+        timeout=timeout,
+        dry_run=dry_run,
+        agents=agents,
+    )
+    if result is not None:
+        raise typer.Exit(result)
+
+
+def _run_goal(
+    *,
+    objective: str | None,
+    from_file: Path,
+    iterations: int,
+    workspace: Path,
+    config_path: Path,
+    transcript: Path | None,
+    context_chars: int | None,
+    completion_token: str | None,
+    continue_on_error: bool,
+    timeout: float | None,
+    dry_run: bool,
+    agents: list[str] | None,
+) -> int | None:
+    _validate_goal_options(iterations=iterations, context_chars=context_chars, timeout=timeout)
+    loop_config = _load_or_exit(config_path, agents)
+    loop_config = _override_loop_config(
+        loop_config,
+        context_chars=context_chars,
+        completion_token=completion_token,
+    )
+    prompt = _read_objective(objective, from_file, workspace)
     loop = FriendshipLoop(
-        config=config,
-        workspace=args.workspace,
+        config=loop_config,
+        workspace=workspace,
         prompt=prompt,
-        iterations=args.iterations,
-        transcript_path=args.transcript,
-        continue_on_error=args.continue_on_error,
-        timeout_seconds=args.timeout,
-        stream=not args.dry_run,
+        iterations=iterations,
+        transcript_path=transcript,
+        continue_on_error=continue_on_error,
+        timeout_seconds=timeout,
+        stream=not dry_run,
     )
 
-    if args.dry_run:
+    if dry_run:
+        table = Table(title="Planned Goal Loop")
+        table.add_column("#", justify="right", style="dim")
+        table.add_column("Agent", style="bold")
+        table.add_column("Command", overflow="fold")
         for iteration, agent, argv in loop.dry_run():
-            print(f"{iteration:03d} {agent.name}: {shlex.join(argv)}")
-        print(f"transcript: {loop.transcript_path}")
-        return 0
+            table.add_row(f"{iteration:03d}", agent.name, shlex.join(argv))
+        console.print(table)
+        console.print(f"[dim]transcript:[/dim] {loop.transcript_path}")
+        return None
 
-    result = loop.run()
-    print(f"pof: transcript: {result.transcript_path}")
+    try:
+        result = loop.run()
+    except MissingExecutableError as exc:
+        console.print(f"[red]pof:[/red] {exc}")
+        return 127
+    except AgentCommandError as exc:
+        console.print(f"[red]pof:[/red] {exc}")
+        console.print(f"[dim]transcript:[/dim] {exc.transcript_path}")
+        return exc.record.returncode or 1
+    except HarnessError as exc:
+        console.print(f"[red]pof:[/red] {exc}")
+        return 1
+
+    console.print(f"[dim]transcript:[/dim] {result.transcript_path}")
     if result.completed:
-        print(f"pof: complete after {result.iterations_run} iteration(s)")
-        return 0
-    print(f"pof: reached max iterations ({result.iterations_run})")
+        console.print(f"[green]complete[/green] after {result.iterations_run} iteration(s)")
+        return None
+
+    console.print(f"[yellow]reached max iterations[/yellow] ({result.iterations_run})")
     return 1
 
 
-def read_prompt(prompt_text: str | None, prompt_file: Path, workspace: Path) -> str:
-    if prompt_text is not None:
-        text = prompt_text
+def _load_or_exit(config: Path, agents: list[str] | None) -> LoopConfig:
+    try:
+        return load_config(config, agent_order=agents)
+    except ConfigError as exc:
+        console.print(f"[red]configuration error:[/red] {exc}")
+        raise typer.Exit(2)
+
+
+def _override_loop_config(
+    config: LoopConfig,
+    *,
+    context_chars: int | None,
+    completion_token: str | None,
+) -> LoopConfig:
+    if context_chars is None and completion_token is None:
+        return config
+    return LoopConfig(
+        agents=config.agents,
+        completion_token=completion_token or config.completion_token,
+        context_chars=context_chars if context_chars is not None else config.context_chars,
+    )
+
+
+def _validate_goal_options(
+    *,
+    iterations: int,
+    context_chars: int | None,
+    timeout: float | None,
+) -> None:
+    if iterations < 1:
+        console.print("[red]configuration error:[/red] --iterations must be at least 1")
+        raise typer.Exit(2)
+    if context_chars is not None and context_chars < 1:
+        console.print("[red]configuration error:[/red] --context-chars must be at least 1")
+        raise typer.Exit(2)
+    if timeout is not None and timeout <= 0:
+        console.print("[red]configuration error:[/red] --timeout must be greater than 0")
+        raise typer.Exit(2)
+
+
+def _read_objective(objective: str | None, from_file: Path, workspace: Path) -> str:
+    if objective is not None:
+        text = objective
     else:
-        path = prompt_file if prompt_file.is_absolute() else workspace / prompt_file
+        path = from_file if from_file.is_absolute() else workspace / from_file
         if not path.exists():
-            raise ConfigError(f"Prompt file not found: {path}")
+            console.print(f"[red]configuration error:[/red] Goal file not found: {path}")
+            raise typer.Exit(2)
         text = path.read_text(encoding="utf-8")
 
     if not text.strip():
-        raise ConfigError("Prompt cannot be empty.")
+        console.print("[red]configuration error:[/red] Goal cannot be empty.")
+        raise typer.Exit(2)
     return text
+
+
+def main() -> None:
+    app()
+
+
+if __name__ == "__main__":
+    main()
