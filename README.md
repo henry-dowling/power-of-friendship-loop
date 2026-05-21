@@ -4,6 +4,9 @@
 
 `pof` is a variation of /goal (provided by most modern harnesses). it cycles through codex, claude code, and gemini as it loops and only terminates when all three coding agents agree that the task is done.
 
+just run /pof (whatever you would put into /goal normall) and it'll work.
+
+
 Each turn gets the original task, the current loop state, recent agent output,
 and a completion contract. When an agent prints `<promise>COMPLETE</promise>`,
 the loop stops successfully.
