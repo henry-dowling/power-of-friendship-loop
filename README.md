@@ -1,6 +1,4 @@
-
-
-![Uploading CleanShot 2026-05-21 at 01.47.34@2x.png…]()
+<img width="1216" height="730" alt="CleanShot 2026-05-21 at 01 48 11@2x" src="https://github.com/user-attachments/assets/32f19c13-01ff-4647-8e25-64a26ee1ec1f" />
 
 # Power of Friendship Loop
 
