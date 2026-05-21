@@ -1,6 +1,7 @@
 
 
-<img width="1176" height="732" alt="CleanShot 2026-05-21 at 01 40 11@2x" src="https://github.com/user-attachments/assets/66385701-2037-48bd-ac15-6664148eee74" />
+<img width="1194" height="732" alt="CleanShot 2026-05-21 at 01 43 07@2x" src="https://github.com/user-attachments/assets/32930ce1-52bf-40de-862d-a5b591a9817e" />
+
 # Power of Friendship Loop
 
 `pof` is a variation of /goal (provided by most modern harnesses). it cycles through codex, claude code, and gemini as it loops and only terminates when all three coding agents agree that the task is done.
